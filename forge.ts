@@ -711,7 +711,7 @@ async function handleRest(req, res, path, method, query) {
     const oids = tip ? listCommits(repo, tip) : [];
     const list = oids.map((oid) => {
       const c = parseCommit(lookup(repo, oid).data);
-      return { sha: oid, commit: { message: c.message, author: { name: VIEWER.name, email: VIEWER.email }, committer: { name: VIEWER.name, email: VIEWER.email } }, parents: c.parents.map((p) => ({ sha: p })) };
+      return { sha: oid, commit: { message: c.message.replace(/\n+$/, ''), author: { name: VIEWER.name, email: VIEWER.email }, committer: { name: VIEWER.name, email: VIEWER.email } }, parents: c.parents.map((p) => ({ sha: p })) };
     });
     sendJson(res, 200, list);
     return true;
@@ -1416,9 +1416,10 @@ const GQL_FIELDS = {
       const repo = repoFromPath(owner, name);
       const issue = repo?.issues.get(Number(num));
       if (!issue) throw new Error('addComment: issue not found');
-      const comment = { id: commentIdSeq++, node_id: gid('C', `${owner}/${name}#${num}:${commentIdSeq}`), body: input.body ?? '', user: { login: VIEWER.login, id: VIEWER.id }, created_at: nextIso(), updated_at: nextIso() };
-      if (!repo.comments.has(num)) repo.comments.set(num, []);
-      repo.comments.get(num).push(comment);
+      const issueNumber = Number(num);
+      const comment = { id: commentIdSeq++, node_id: gid('C', `${owner}/${name}#${issueNumber}:${commentIdSeq}`), body: input.body ?? '', user: { login: VIEWER.login, id: VIEWER.id }, created_at: nextIso(), updated_at: nextIso() };
+      if (!repo.comments.has(issueNumber)) repo.comments.set(issueNumber, []);
+      repo.comments.get(issueNumber).push(comment);
       return { __type: 'AddCommentPayload', commentEdge: { __type: 'IssueCommentEdge', node: { __type: 'IssueComment', id: comment.node_id, body: comment.body } } };
     },
   },
@@ -1819,6 +1820,16 @@ function fetchPlan(repo, wants, haves, depth, oldShallow) {
   const haveSet = new Set();
   for (const h of haves ?? []) {
     for (const o of collectReachable([h], (oid) => lookup(repo, oid), { allowMissing: true })) haveSet.add(o);
+  }
+  // A shallow boundary is a commit the client HAS but whose parents it does NOT have:
+  // drop everything reachable from each boundary's parents out of the have-set, or a
+  // deepen would wrongly conclude the parent is already on the client.
+  for (const b of oldShallow ?? []) {
+    const boundary = lookup(repo, b);
+    if (!boundary || boundary.type !== 'commit') continue;
+    for (const parent of parseCommit(boundary.data).parents) {
+      for (const o of collectReachable([parent], (oid) => lookup(repo, oid), { allowMissing: true })) haveSet.delete(o);
+    }
   }
   const send = new Set();
   const includedCommits = new Map();
